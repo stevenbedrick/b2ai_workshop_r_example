@@ -209,26 +209,54 @@ airway.clf.matrix.split.train %>% group_by(airway_stenosis_dx) %>% tally %>% mut
 
 
 ```{r}
+library(tidymodels)
 library(parsnip)
 library(workflows)
 library(yardstick)
+
 set.seed(42)
 # Basically following the first recipe in the `workflows` package tutorial.
 
 logit_model <- logistic_reg() %>% set_engine("glm")
+rf_model <- rand_forest(trees=75) %>% set_engine("ranger") %>% set_mode("classification")
 
 glm_workflow <- workflow() %>% add_model(logit_model)
+rf_workflow <- workflow() %>% add_model(rf_model)
+```
+
+## GLM
+
+```{r}
 
 simple_glm <- glm_workflow %>% add_formula(airway_stenosis_dx ~ .) %>% 
   fit(data=airway.clf.matrix.split.train)
 
 simple_glm_probs <- predict(simple_glm, airway.clf.matrix.split.test, type="prob") %>% bind_cols(airway.clf.matrix.split.test)
+simple_glm_clf <- predict(simple_glm, airway.clf.matrix.split.test, type="class") %>% bind_cols(airway.clf.matrix.split.test)
 simple_glm_roc <- simple_glm_probs %>% roc_curve(airway_stenosis_dx, .pred_Case)
 
 simple_glm_probs %>% roc_auc(airway_stenosis_dx, .pred_Case)
+simple_glm_clf %>% conf_mat(airway_stenosis_dx, .pred_class) %>% summary
 autoplot(simple_glm_roc)
+```
+
+## RF
+```{r}
+simple_rf <- rf_workflow %>% add_formula(airway_stenosis_dx ~ .) %>% 
+  fit(data=airway.clf.matrix.split.train)
+simple_rf_probs <- predict(simple_rf, airway.clf.matrix.split.test, type="prob") %>% bind_cols(airway.clf.matrix.split.test)
+simple_rf_clf <- predict(simple_rf, airway.clf.matrix.split.test, type="class") %>% bind_cols(airway.clf.matrix.split.test)
+simple_rf_roc <- simple_rf_probs %>% roc_curve(airway_stenosis_dx, .pred_Case)
+
+
+
+simple_rf_probs %>% roc_auc(airway_stenosis_dx, .pred_Case)
+simple_rf_clf %>% conf_mat(airway_stenosis_dx, .pred_class) %>% summary
+autoplot(simple_rf_roc)
 
 ```
+
+## Cross-validation
 OK, let's try that again with some 10-fold cross-validation...
 
 ```{r}
@@ -236,14 +264,19 @@ library(tune)
 set.seed(42)
 folds <- vfold_cv(airway.clf.matrix.split.train, v=10)
 
-cv_workflow <- workflow() %>% add_model(logit_model) %>% add_formula(airway_stenosis_dx ~ .)
+glm_cv_workflow <- workflow() %>% add_model(logit_model) %>% add_formula(airway_stenosis_dx ~ .)
+rf_cv_workflow <- workflow() %>% add_model(rf_model) %>% add_formula(airway_stenosis_dx ~ .)
 
-cv_fitted <- cv_workflow %>% 
+glm_cv_fitted <- glm_cv_workflow %>% 
   fit_resamples(folds)
 
-collect_metrics(cv_fitted)
+rf_cv_fitted <-rf_cv_workflow %>% fit_resamples(folds)
+
+collect_metrics(glm_cv_fitted)
+collect_metrics(rf_cv_fitted)
 
 ```
 
+Note the difference in performance...
 
 
