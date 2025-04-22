@@ -1,0 +1,249 @@
+---
+title: "Notes for Workshop"
+author: "Steven Bedrick"
+date: "2025-04-22"
+output: html_document
+---
+
+# Setup
+
+## Loading data
+
+```{r}
+library(tidyverse)
+library(gt)
+library(gtsummary)
+
+source("ingest.R")
+
+PATH_TO_PHYSIONET_DOWNLOAD_DIR <- "/Users/bedricks/Documents/b2ai_voice_features_2.0/"
+
+phenotype_fname <- "phenotype.tsv"
+static_features_fname <- "static_features.tsv"
+
+phenotype.raw <- read_tsv(fs::path_join(c(PATH_TO_PHYSIONET_DOWNLOAD_DIR, phenotype_fname)))
+static_features.raw <- read_tsv(fs::path_join(c(PATH_TO_PHYSIONET_DOWNLOAD_DIR, static_features_fname)))
+
+phenotype <- clean_phenotype_cols(phenotype.raw)
+
+
+```
+Stop and look: What did we get? How are these files structured?
+
+## Compute lookup tables
+
+These are handy for actually working with the data...
+
+```{r}
+# dataframe with which protocols given participants were eligible for
+participant.eligibility <- compute_eligibility(phenotype)
+participant.eligibility
+
+# dataframe with participants and their condition status
+phenotype.conditions <- compute_conditions(phenotype)
+phenotype.conditions
+```
+
+# Sanity-checking and EDA
+
+```{r}
+phenotype.conditions %>%   filter(is_checked==TRUE) %>% 
+  group_by(condition, sex_at_birth) %>% summarise(n=n()) %>% arrange(desc(n)) |> 
+  ggplot(aes(y=fct_reorder(condition, n), x=n)) + geom_col() + facet_wrap(~sex_at_birth)
+```
+
+# Step 1: Identify cohort
+
+## Step 1a: Find all participants who are eligible for the respiratory disorder protocol
+
+```{r}
+resp.participants <- participant.eligibility %>% filter(eligible_protocol == "Respiratory Disorders")
+resp.participants
+```
+
+## Step 1b: Find controls from resp. protocol, and cases with airway stenosis
+
+```{r}
+airway.stenosis.controls <- resp.participants %>% filter(is_control_participant)
+airway.stenosis.controls
+```
+
+Now for cases:
+
+```{r}
+airway.stenosis.cases <- phenotype.conditions %>% 
+  filter(condition=="airway_stenosis" & is_checked) %>% select(participant_id) %>% 
+  inner_join(resp.participants, by="participant_id")
+airway.stenosis.cases
+```
+
+Assemble them together:
+
+```{r}
+airway.stenosis.cohort <- airway.stenosis.cases %>% rbind(airway.stenosis.controls) %>%
+  mutate(airway_stenosis_dx=!is_control_participant)
+airway.stenosis.cohort
+```
+
+Sanity check #1: do we have any duplicates?
+
+```{r}
+airway.stenosis.cohort %>% select(participant_id) %>% distinct
+```
+
+Sanity check #2: Do we have any cases that are also somehow controls?
+This shouldn't be possible based on how we constructed this, but let's check anyway.
+
+```{r}
+airway.stenosis.cohort %>% group_by(is_control_participant) %>% tally
+```
+
+Are these numbers what we were expecting?
+
+## Step 1c: Quick EDA
+
+Check age and sex; those are the things that are most likely to be imbalanced from our dataset.
+
+```{r}
+airway.stenosis.cohort %>% select(age, sex_at_birth, airway_stenosis_dx) %>% 
+  mutate(airway_stenosis_dx=case_match(airway_stenosis_dx, TRUE~"Case",FALSE~"Control")) %>% 
+  tbl_summary(by=airway_stenosis_dx)
+```
+
+Decision: is that too imbalanced for whatever it is that we want to do?
+
+Answering this question will require clinical expertise- do you have your buddy?
+
+Next: check confounders (go to questionnaire sheet)
+Question: can you figure out which column would tell us about grass pollen allergies?
+
+## Step 1d: what tasks do we have for our participants?
+
+This method isn't perfect, as it ignores repeated sessions, but it will give us an idea of what we are dealing with.
+
+```{r}
+airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") %>% 
+  select(participant_id, age=age, sex_at_birth=sex_at_birth, session_id, task_name, airway_stenosis_dx) %>% 
+  select(-participant_id, -session_id, -sex_at_birth,-age) %>% 
+  mutate(airway_stenosis_dx=case_match(airway_stenosis_dx, TRUE~"Case",FALSE~"Control")) %>% 
+  tbl_summary(by="airway_stenosis_dx")
+```
+
+Looking at this table, note that there are some tasks that have the numbers we would expect (69/59) and others that have imbalances; these are likely stimuli from other protocols that some of our cohort happeend to also be eligible for, and for which they were cases or controls.
+
+In the interests of time, let's pick Prolonged Vowel, Rainbow Passage, and the Maximum Phonation time series.
+
+# Step 2: Find our data
+
+Let's start with some more EDA. To establish face validity of our data-wrangling approach, let's find something that we know is there: an F0 difference beteen male and female speakers in the rainbow passage.
+
+```{r}
+airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") %>% 
+  filter(is_control_participant & task_name=="Rainbow-Passage")
+```
+
+Quick check: does this number match what our previous table indicated should be there?
+
+Now, let's make our boxplot. How might we find the F0 feature?
+
+```{r}
+airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") %>% 
+  filter(is_control_participant & task_name=="Rainbow-Passage") %>% 
+  ggplot(aes(x=sex_at_birth, y=mean_f0_hertz)) + geom_boxplot()
+```
+I like to do this kind of sanity check, just to make sure I'm interpreting the features correctly and that everything is where I expect it to be. Now, let's look at our actual question.
+
+Question: where do we find the jitter and shimmer features of interest?
+
+```{r}
+tasks.of.interest <- c("Rainbow-Passage", "Prolonged-vowel", "Maximum-phonation-time-1", "Maximum-phonation-time-2", "Maximum-phonation-time-3")
+
+
+airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") %>% 
+  filter(task_name %in% tasks.of.interest) %>% 
+  ggplot(aes(x=airway_stenosis_dx, y=jitterLocal_sma3nz_amean)) + geom_boxplot() + facet_wrap(~task_name) +
+  ggtitle("Jitter, by task")
+
+airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") %>% 
+  filter(task_name %in% tasks.of.interest) %>% 
+  ggplot(aes(x=airway_stenosis_dx, y=localDB_shimmer)) + geom_boxplot() + facet_wrap(~task_name) + 
+  ggtitle("Shimmer, by task")
+  
+```
+
+From a univariate standpoint, it does look like we are possibly seeing some signal in these two features! Now, let's fire up the ML woodchipper.
+
+# Step 3: Can we use these features?
+
+First, make a design/feature matrix:
+
+```{r}
+airway.clf.matrix <- airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") %>% 
+  filter(task_name %in% tasks.of.interest) %>% 
+  select(participant_id, age, sex_at_birth, airway_stenosis_dx, task_name, jitterLocal_sma3nz_amean, localDB_shimmer) %>% 
+  pivot_longer(c(jitterLocal_sma3nz_amean, localDB_shimmer), names_to="metric", values_to = "feature_value") %>% 
+  pivot_wider(names_from=c(task_name, metric), values_from=feature_value) %>% 
+  select(-participant_id) %>% 
+  mutate(airway_stenosis_dx=as.factor(case_match(airway_stenosis_dx,TRUE~"Case",FALSE~"Control")))
+airway.clf.matrix
+```
+
+Compute a test-train split
+
+```{r}
+library(rsample)
+set.seed(42)
+
+# try making a split
+airway.clf.matrix.split <- initial_split(airway.clf.matrix, strata = airway_stenosis_dx)
+airway.clf.matrix.split.train <- training(airway.clf.matrix.split)
+airway.clf.matrix.split.test <- testing(airway.clf.matrix.split)
+```
+
+
+Always check to see what your random-chance MLE estimate ought to be, as a crappy baseline:
+
+```{r}
+airway.clf.matrix.split.train %>% group_by(airway_stenosis_dx) %>% tally %>% mutate(prop=n/sum(n))
+```
+
+
+```{r}
+library(parsnip)
+library(workflows)
+library(yardstick)
+set.seed(42)
+# Basically following the first recipe in the `workflows` package tutorial.
+
+logit_model <- logistic_reg() %>% set_engine("glm")
+
+glm_workflow <- workflow() %>% add_model(logit_model)
+
+simple_glm <- glm_workflow %>% add_formula(airway_stenosis_dx ~ .) %>% 
+  fit(data=airway.clf.matrix.split.train)
+
+simple_glm_probs <- predict(simple_glm, airway.clf.matrix.split.test, type="prob") %>% bind_cols(airway.clf.matrix.split.test)
+simple_glm_roc <- simple_glm_probs %>% roc_curve(airway_stenosis_dx, .pred_Case)
+
+simple_glm_probs %>% roc_auc(airway_stenosis_dx, .pred_Case)
+autoplot(simple_glm_roc)
+
+```
+OK, let's try that again with some 10-fold cross-validation...
+
+```{r}
+library(tune) 
+set.seed(42)
+folds <- vfold_cv(airway.clf.matrix.split.train, v=10)
+
+cv_workflow <- workflow() %>% add_model(logit_model) %>% add_formula(airway_stenosis_dx ~ .)
+
+cv_fitted <- cv_workflow %>% 
+  fit_resamples(folds)
+
+collect_metrics(cv_fitted)
+
+```
+
+
+
