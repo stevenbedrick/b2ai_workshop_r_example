@@ -63,12 +63,16 @@ resp.participants
 
 ## Step 1b: Find controls from resp. protocol, and cases with airway stenosis
 
+Controls:
+
 ```{r}
 airway.stenosis.controls <- resp.participants %>% filter(is_control_participant)
 airway.stenosis.controls
 ```
 
-Now for cases:
+Now for cases.
+
+We can look at the enrollment form, and find participants who checked the airway stenosis box and were enrolled in the respiratory disorder protocol:
 
 ```{r}
 airway.stenosis.cases <- phenotype.conditions %>% 
@@ -77,11 +81,34 @@ airway.stenosis.cases <- phenotype.conditions %>%
 airway.stenosis.cases
 ```
 
+
+However, we _may_ want to be more selective, and only include patients who are documented as having a gold-standard clinical diagnosis for this condition. 
+This information would be captured on the diagnosis-specific questionnaire; we can use the data dictionary to identify the relevant column.
+
+How similar or different would our cohorts be? Let's do a quick tabulation:
+
+```{r}
+phenotype %>% select(airway_stenosis, diagnosis_as_gsd) %>% group_by(airway_stenosis, diagnosis_as_gsd) %>% tally
+```
+
+We see that there are a handful of participants (n=4) who "checked the box" during enrollment but for which we do _not_ have solid GS diagnosis status. 
+We also see that there are 2 participants who _didn't_ check airway stenosis box, but for whom we _do_ have a GSD.
+For now, we will exclude those patients, but depending on what we are trying to do, we might want to dig in to those participants more closely.
+
+Let's subset our cases to only include patients who checked the box and who also have a GS diagnosis.
+
+
+```{r}
+airway.stenosis.cases <- phenotype %>% filter(diagnosis_as_gsd=="Yes") %>% select(participant_id) %>% inner_join(airway.stenosis.cases, by="participant_id")
+airway.stenosis.cases
+```
+
+
 Assemble them together:
 
 ```{r}
 airway.stenosis.cohort <- airway.stenosis.cases %>% rbind(airway.stenosis.controls) %>%
-  mutate(airway_stenosis_dx=!is_control_participant)
+  mutate(airway_stenosis_dx=!is_control_participant) # make a new column to keep track of dx status in an easier way
 airway.stenosis.cohort
 ```
 
@@ -129,7 +156,9 @@ airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") 
   tbl_summary(by="airway_stenosis_dx")
 ```
 
-Looking at this table, note that there are some tasks that have the numbers we would expect (69/59) and others that have imbalances; these are likely stimuli from other protocols that some of our cohort happeend to also be eligible for, and for which they were cases or controls.
+Looking at this table, note that there are some tasks that have the numbers we would expect (64/59) and others that have imbalances; these are likely stimuli from other protocols that some of our cohort happeend to also be eligible for, and for which they were cases or controls.
+
+There are also a few where we have an extra datapoint or two; those are instances where we have multiple administrations for a given participant. For today, we will ignore this, but obviously for a "real" analysis you'd need to deal with this.
 
 In the interests of time, let's pick Prolonged Vowel, Rainbow Passage, and the Maximum Phonation time series.
 
@@ -171,7 +200,8 @@ airway.stenosis.cohort %>% inner_join(static_features.raw, by="participant_id") 
   
 ```
 
-From a univariate standpoint, it does look like we are possibly seeing some signal in these two features! Now, let's fire up the ML woodchipper.
+From a univariate standpoint, it does look like we are possibly seeing some signal in these two features! 
+Now, let's fire up the ML woodchipper.
 
 # Step 3: Can we use these features?
 
@@ -201,7 +231,7 @@ airway.clf.matrix.split.test <- testing(airway.clf.matrix.split)
 ```
 
 
-Always check to see what your random-chance MLE estimate ought to be, as a crappy baseline:
+Always check to see what your random-chance MLE estimate ought to be, as a baseline:
 
 ```{r}
 airway.clf.matrix.split.train %>% group_by(airway_stenosis_dx) %>% tally %>% mutate(prop=n/sum(n))
