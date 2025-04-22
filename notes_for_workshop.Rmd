@@ -13,6 +13,7 @@ output: html_document
 library(tidyverse)
 library(gt)
 library(gtsummary)
+library(recipes)
 
 source("ingest.R")
 
@@ -218,6 +219,18 @@ airway.clf.matrix <- airway.stenosis.cohort %>% inner_join(static_features.raw, 
 airway.clf.matrix
 ```
 
+Do some variable centering and nominalization:
+
+```{r}
+preproc_recipe <- recipe(airway_stenosis_dx ~ ., data = airway.clf.matrix) %>% 
+  step_center(all_numeric_predictors()) %>%
+  step_scale(all_numeric_predictors()) %>% 
+  step_dummy(all_nominal_predictors())   # nominalize sex_at_birth
+airway.clf.matrix.prepped <- prep(preproc_recipe) %>% bake(airway.clf.matrix)
+```
+
+
+
 Compute a test-train split
 
 ```{r}
@@ -225,7 +238,7 @@ library(rsample)
 set.seed(42)
 
 # try making a split
-airway.clf.matrix.split <- initial_split(airway.clf.matrix, strata = airway_stenosis_dx)
+airway.clf.matrix.split <- initial_split(airway.clf.matrix.prepped, strata = airway_stenosis_dx)
 airway.clf.matrix.split.train <- training(airway.clf.matrix.split)
 airway.clf.matrix.split.test <- testing(airway.clf.matrix.split)
 ```
