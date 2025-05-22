@@ -15,7 +15,8 @@ compute_eligibility <- function(input.raw.phenotype.df) {
     select(-dummy_col) |> mutate(eligible_protocol=as.factor(eligible_protocol))
 }
 
-# Compute a long dataframe of participants and condition + case/control status
+# Compute a long dataframe of participants and self-reported condition + case/control status
+# NOTE this is different than their validated clinical status!
 compute_conditions <- function(input.raw.phenotype.df) {
   input.raw.phenotype.df %>% select(participant_id, age, sex_at_birth, is_control_participant, laryng_cancer:osa) %>% 
     pivot_longer(laryng_cancer:osa, names_to="condition", values_to="is_checked") %>% 
